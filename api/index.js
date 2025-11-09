@@ -19,6 +19,9 @@ import userRoutes from './routes/user-routes.js';
 import levelRoutes from './routes/level-routes.js';
 import classRoutes from './routes/class-routes.js';
 
+// Serverless-safe MongoDB connection
+import { dbConnect } from "./db.js";
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -30,26 +33,35 @@ app.use('/api', userRoutes);
 app.use('/api/levels', levelRoutes);
 app.use('/api/classes', classRoutes);
 
+// Start HTTP server only after a successful DB connection.
+// Use an async IIFE here instead of top-level await for broader Node compatibility.
 const PORT = process.env.PORT || 4000;
-mongoose.connect(process.env.MONGODB_URI)
-  .then(() => {
-    console.log('Successfully connected to MongoDB database:', mongoose.connection.name);
-    const server = app.listen(PORT, () => {
-      console.log(`Server listening on port ${PORT}`);
-    }).on('error', (err) => {
-      if (err.code === 'EADDRINUSE') {
-        console.log(`Port ${PORT} is busy, trying ${PORT + 1}`);
-        server.listen(PORT + 1);
-      } else {
-        console.error('Server error:', err);
-      }
-    });
-  })
-  .catch((error) => {
-    console.error('MongoDB connection error:', error.message);
-    process.exit(1); // Exit if we can't connect to the database
-  });
 
+(async () => {
+  try {
+    // Reuse a memoized Mongoose connection on warm invocations.
+    await dbConnect();
+    console.log("MongoDB connected:", mongoose.connection.name);
+
+    const server = app
+      .listen(PORT, () => {
+        console.log(`Server listening on port ${PORT}`);
+      })
+      .on("error", (err) => {
+        if (err.code === "EADDRINUSE") {
+          console.log(`Port ${PORT} is busy, trying ${PORT + 1}`);
+          server.listen(PORT + 1);
+        } else {
+          console.error("Server error:", err);
+        }
+      });
+  } catch (error) {
+    console.error("MongoDB connection error:", error.message);
+    process.exit(1); // Exit if we can't connect to the database
+  }
+})();
+
+// Keep the error listener for visibility on runtime issues.
 mongoose.connection.on('error', (err) => {
   console.error('MongoDB connection error:', err);
 });
