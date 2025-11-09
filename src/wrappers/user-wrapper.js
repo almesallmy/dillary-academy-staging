@@ -1,95 +1,72 @@
 import axios from 'axios';
 import { toTitleCase } from '@/utils/formatters';
 
+/** Create user */
 const postUser = async (body) => {
   body.firstName = toTitleCase(body.firstName);
   body.lastName = toTitleCase(body.lastName);
-  try {
-    const response = await axios.post("/api/sign-up", body);
-    return response;
-  } catch (error) {
-    throw error;
-  }
+  const response = await axios.post('/api/sign-up', body);
+  return response;
 };
 
+/** Get all users (PII — admin-only views should guard on server) */
 const getUsers = async () => {
-  try {
-    const response = await axios.get('/api/users');
-    return response;
-  } catch (error) {
-    console.error('Error fetching data:', error);
-    throw error;
-  }
+  const response = await axios.get('/api/users');
+  return response;
 };
 
-// get user by id or email or whatsapp
-const getUser = async (query = "") => {
-  try {
-    const response = await axios.get(`/api/user?${query}`);
-    return response;
-  } catch (error) {
-    console.error('Error fetching data:', error);
-    throw error;
-  }
+/** Get single user by query string (_id | email | whatsapp) */
+const getUser = async (query = '') => {
+  const response = await axios.get(`/api/user?${query}`);
+  return response;
 };
 
+/** Update user document */
 const updateUser = async (userId, userData) => {
-  try {
-    if (Object.hasOwn(userData, "firstName")) {
-      userData.firstName = toTitleCase(userData.firstName);
-    }
-    if (Object.hasOwn(userData, "lastName")) {
-      userData.lastName = toTitleCase(userData.lastName);
-    }
-    if (Object.hasOwn(userData, "gender")) {
-      userData.gender = userData.gender.toLowerCase();
-    }
-    const response = await axios.put(`/api/user/${userId}`, userData);
-    return response.data;
-  } catch (error) {
-    console.error('Error updating user:', error);
-    throw error;
-  }
+  if (Object.hasOwn(userData, 'firstName')) userData.firstName = toTitleCase(userData.firstName);
+  if (Object.hasOwn(userData, 'lastName'))  userData.lastName  = toTitleCase(userData.lastName);
+  if (Object.hasOwn(userData, 'gender'))    userData.gender    = userData.gender.toLowerCase();
+  const { data } = await axios.put(`/api/user/${userId}`, userData);
+  return data;
 };
 
-// fetch full details of all of student's classes
+/**
+ * NEW: Paginated admin fetch that returns students WITH their class objects in one call.
+ * Backend: GET /api/students-with-classes?limit=100&page=1
+ */
+const getStudentsWithClasses = async ({ page = 1, limit = 100 } = {}) => {
+  const { data } = await axios.get('/api/students-with-classes', {
+    params: { page, limit },
+  });
+  return data; // { items, total, page, limit }
+};
+
+/**
+ * DEPRECATED: N+1 per-student fetch (kept for backward-compat while migrating UI).
+ * Prefer getStudentsWithClasses().
+ */
 const getStudentsClasses = async (studentId) => {
-  try {
-    const response = await axios.get(`/api/students-classes/${studentId}`);
-    return response.data;
-  } catch (error) {
-    console.error("Error fetching student's classes:", error);
-    throw error;
-  }
-}
+  const { data } = await axios.get(`/api/students-classes/${studentId}`);
+  return data;
+};
 
 const getStudentsForExport = async () => {
-  try {
-    const response = await axios.get('/api/students-export');
-    return response.data;
-  } catch (error) {
-    console.error('Error fetching students for export:', error);
-    throw error;
-  }
+  const { data } = await axios.get('/api/students-export');
+  return data;
 };
 
 const deleteUser = async (userId) => {
-  try {
-    const response = await axios.delete(`/api/user/${userId}`);
-    return response.data;
-  } catch (error) {
-    console.error('Error deleting user:', error);
-    throw error;
-  }
-}
-
+  const { data } = await axios.delete(`/api/user/${userId}`);
+  return data;
+};
 
 export {
   postUser,
   getUsers,
   getUser,
   updateUser,
-  getStudentsClasses,
+  getStudentsWithClasses, // <- use this in Admin/Students
+  getStudentsClasses,     // deprecated
   getStudentsForExport,
-  deleteUser
+  deleteUser,
 };
