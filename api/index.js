@@ -1,209 +1,174 @@
+// api/index.js
+// Express entrypoint for the API.
+// Goals:
+//  - Serverless-safe on Vercel (no unconditional app.listen())
+//  - Reuse a single Mongoose connection per instance (dbConnect() is memoized)
+//  - Keep endpoints and routers exactly as before
+
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import mongo from "mongodb";
 import mongoose from "mongoose";
 import mongoSanitize from "express-mongo-sanitize";
 
-// util functions
+// Utils
 import { validateInput } from "../src/utils/backend/validate-utils.js";
 
-// external schemas
+// Schemas (used by a few legacy endpoints below)
 import User from "./schemas/User.js";
-import Class from './schemas/Class.js';
+import Class from "./schemas/Class.js";
 
-// external routes
-import translationRoutes from './routes/translation-routes.js';
-import emailRoutes from './routes/email-routes.js';
-import userRoutes from './routes/user-routes.js';
-import levelRoutes from './routes/level-routes.js';
-import classRoutes from './routes/class-routes.js';
+// Routers
+import translationRoutes from "./routes/translation-routes.js";
+import emailRoutes from "./routes/email-routes.js";
+import userRoutes from "./routes/user-routes.js";
+import levelRoutes from "./routes/level-routes.js";
+import classRoutes from "./routes/class-routes.js";
 
-// Serverless-safe MongoDB connection
+// Memoized DB connection (must export a function that reuses an existing conn)
 import { dbConnect } from "./db.js";
 
 const app = express();
+
+// --- Global middleware (order matters) ---------------------------------------
 app.use(cors());
 app.use(express.json());
 app.use(mongoSanitize());
 
-app.use('/api/locales', translationRoutes);
-app.use('/api', emailRoutes);
-app.use('/api', userRoutes);
-app.use('/api/levels', levelRoutes);
-app.use('/api/classes', classRoutes);
-
-// Start HTTP server only after a successful DB connection.
-// Use an async IIFE here instead of top-level await for broader Node compatibility.
-const PORT = process.env.PORT || 4000;
-
-(async () => {
+// Ensure DB is connected before any route runs.
+// dbConnect() should be memoized so warm invocations are a fast no-op.
+app.use(async (req, res, next) => {
   try {
-    // Reuse a memoized Mongoose connection on warm invocations.
     await dbConnect();
-    console.log("MongoDB connected:", mongoose.connection.name);
-
-    const server = app
-      .listen(PORT, () => {
-        console.log(`Server listening on port ${PORT}`);
-      })
-      .on("error", (err) => {
-        if (err.code === "EADDRINUSE") {
-          console.log(`Port ${PORT} is busy, trying ${PORT + 1}`);
-          server.listen(PORT + 1);
-        } else {
-          console.error("Server error:", err);
-        }
-      });
-  } catch (error) {
-    console.error("MongoDB connection error:", error.message);
-    process.exit(1); // Exit if we can't connect to the database
+    next();
+  } catch (err) {
+    console.error("DB connect failed:", err);
+    res.status(500).json({ message: "Database connection failed" });
   }
-})();
-
-// Keep the error listener for visibility on runtime issues.
-mongoose.connection.on('error', (err) => {
-  console.error('MongoDB connection error:', err);
 });
 
-//------------------ ENDPOINTS ------------------//
+// Attach one error listener per process to surface driver-level issues.
+if (mongoose.connection.listenerCount("error") === 0) {
+  mongoose.connection.on("error", (err) => {
+    console.error("MongoDB connection error:", err);
+  });
+}
 
+// --- Mount feature routers ----------------------------------------------------
+app.use("/api/locales", translationRoutes);
+app.use("/api", emailRoutes);
+app.use("/api", userRoutes);
+app.use("/api/levels", levelRoutes);
+app.use("/api/classes", classRoutes);
 
-/* CLASS RELATED ENDPOINTS */
+// --- Health check (simple visibility for uptime checks) ----------------------
+app.get("/api/health", (_req, res) => {
+  // readyState: 0=disconnected, 1=connected, 2=connecting, 3=disconnecting
+  res.json({ ok: true, db: mongoose.connection.readyState });
+});
 
-// Get All Classes
-app.get('/api/all-classes', async (req, res) => {
+// ------------------ Legacy endpoints kept as-is ------------------------------
+
+// Get All Classes (with simple filter support)
+app.get("/api/all-classes", async (req, res) => {
   try {
-    if ('level' in req.query) {
+    if ("level" in req.query) {
       req.query.level = Number(req.query.level);
     }
-    const allowedFields = ['level', 'instructor', 'ageGroup'];
+    const allowedFields = ["level", "instructor", "ageGroup"];
     const filters = validateInput(req.query, allowedFields);
 
-    //apply the filters directly to the database query
     const data = await Class.find(filters);
     res.json(data);
   } catch (err) {
     res.status(500).send(err);
   }
-})
+});
 
 // Enroll in a class
-app.put('/api/users/:id/enroll', async (req, res) => {
-  const { classId } = req.body
+app.put("/api/users/:id/enroll", async (req, res) => {
+  const { classId } = req.body;
   const { id } = req.params;
 
   if (!mongoose.Types.ObjectId.isValid(id)) {
-    return res.status(400).json({ error: 'Invalid ID' });
+    return res.status(400).json({ error: "Invalid ID" });
   }
 
   try {
-    // check that student isn't already enrolled
     const user = await User.findById(id);
     if (user.enrolledClasses.includes(classId)) {
-      return res.status(400).json({ message: 'Already enrolled in this class' });
+      return res.status(400).json({ message: "Already enrolled in this class" });
     }
 
-    let cls = await Class.findById(classId);
-    if (!cls) {
-      return res.status(404).json({ message: 'Class not found' });
-    }
+    const cls = await Class.findById(classId);
+    if (!cls) return res.status(404).json({ message: "Class not found" });
     if (!cls.isEnrollmentOpen) {
-      return res.status(403).json({ message: 'Enrollment is currently closed for this class.' });
+      return res.status(403).json({ message: "Enrollment is currently closed for this class." });
     }
 
-    // add class id to user's classes
-    await User.findByIdAndUpdate(
-      id,
-      { $addToSet: { enrolledClasses: classId } }
-    )
+    await User.findByIdAndUpdate(id, { $addToSet: { enrolledClasses: classId } });
+    await Class.findByIdAndUpdate(classId, { $addToSet: { roster: id } });
 
-    // add student id to class's roster
-    await Class.findByIdAndUpdate(
-      classId,
-      { $addToSet: { roster: id } }
-    )
-
-    res.status(201).json({ message: 'Enrolled successfully!' })
+    res.status(201).json({ message: "Enrolled successfully!" });
   } catch (err) {
-    console.error('Error enrolling into class:', err);
-    res.status(500).json({ message: 'Error enrolling into class' })
+    console.error("Error enrolling into class:", err);
+    res.status(500).json({ message: "Error enrolling into class" });
   }
-})
+});
 
-// Unenroll in a class
-app.put('/api/users/:id/unenroll', async (req, res) => {
-  const { classId } = req.body
+// Unenroll from a class
+app.put("/api/users/:id/unenroll", async (req, res) => {
+  const { classId } = req.body;
   const { id } = req.params;
 
   if (!mongoose.Types.ObjectId.isValid(id)) {
-    return res.status(400).json({ error: 'Invalid ID' });
+    return res.status(400).json({ error: "Invalid ID" });
   }
 
   try {
-    // check that student is enrolled
     const user = await User.findById(id);
     if (!user.enrolledClasses.includes(classId)) {
-      return res.status(400).json({ message: 'Not enrolled in this class' });
+      return res.status(400).json({ message: "Not enrolled in this class" });
     }
 
-    // remove class id from user's classes
-    await User.findByIdAndUpdate(
-      id,
-      { $pull: { enrolledClasses: classId } },
-    )
+    await User.findByIdAndUpdate(id, { $pull: { enrolledClasses: classId } });
+    await Class.findByIdAndUpdate(classId, { $pull: { roster: id } });
 
-    // remove student id from class's roster
-    await Class.findByIdAndUpdate(
-      classId,
-      { $pull: { roster: id } },
-    )
-
-    res.status(201).json({ message: 'Successfully unenrolled' })
+    res.status(201).json({ message: "Successfully unenrolled" });
   } catch (err) {
-    res.status(500).json({ message: 'Error unenrolling into class' })
+    res.status(500).json({ message: "Error unenrolling into class" });
   }
-})
+});
 
-// Get Students Export Data
-// Get Students Export Data
-app.get('/api/students-export', async (req, res) => {
+// Students export (kept as-is functionally)
+app.get("/api/students-export", async (_req, res) => {
   try {
-    // Get all students with privilege "student"
-    const students = await User.find({ privilege: 'student' });
-
-    // Get all classes for reference
+    const students = await User.find({ privilege: "student" });
     const classes = await Class.find();
+    const classMap = new Map(classes.map((c) => [c._id.toString(), c]));
 
-    // Create a map for quick access to class details
-    const classMap = new Map(classes.map(c => [c._id.toString(), c]));
-
-    // Helper to format time in 12-hour clock with am/pm
     const formatTime = (hours, minutes) => {
-      const period = hours >= 12 ? 'pm' : 'am';
-      const hour12 = hours % 12 || 12; // Convert 0 to 12
-      return `${hour12}:${minutes.toString().padStart(2, '0')}${period}`;
+      const period = hours >= 12 ? "pm" : "am";
+      const hour12 = hours % 12 || 12;
+      return `${hour12}:${minutes.toString().padStart(2, "0")}${period}`;
     };
 
-    // Format student data for export
     const formattedStudents = [];
 
     for (const student of students) {
-      const enrolledClasses = (student.enrolledClasses || [])
-        .map(classId => {
+      const enrolled = (student.enrolledClasses || [])
+        .map((classId) => {
           const classInfo = classMap.get(classId.toString());
           if (!classInfo || !Array.isArray(classInfo.schedule)) return null;
 
-          // Format schedules in EST
           const scheduleEST = classInfo.schedule
-            .map(s => `${s.day} ${s.startTime}-${s.endTime}`)
-            .join('\n');
+            .map((s) => `${s.day} ${s.startTime}-${s.endTime}`)
+            .join("\n");
 
-          // Convert EST to Istanbul time (EST + 7 hours)
           const scheduleIstanbul = classInfo.schedule
-            .map(s => {
-              const [startHour, startMin] = s.startTime.split(':').map(Number);
-              const [endHour, endMin] = s.endTime.split(':').map(Number);
+            .map((s) => {
+              const [startHour, startMin] = s.startTime.split(":").map(Number);
+              const [endHour, endMin] = s.endTime.split(":").map(Number);
 
               const estStart = new Date();
               const estEnd = new Date();
@@ -213,9 +178,12 @@ app.get('/api/students-export', async (req, res) => {
               const istStart = new Date(estStart.getTime() + 7 * 60 * 60 * 1000);
               const istEnd = new Date(estEnd.getTime() + 7 * 60 * 60 * 1000);
 
-              return `${s.day} ${formatTime(istStart.getHours(), istStart.getMinutes())}-${formatTime(istEnd.getHours(), istEnd.getMinutes())}`;
+              return `${s.day} ${formatTime(istStart.getHours(), istStart.getMinutes())}-${formatTime(
+                istEnd.getHours(),
+                istEnd.getMinutes()
+              )}`;
             })
-            .join('\n');
+            .join("\n");
 
           return {
             level: classInfo.level,
@@ -223,43 +191,52 @@ app.get('/api/students-export', async (req, res) => {
             instructor: classInfo.instructor,
             link: classInfo.link,
             scheduleEST,
-            scheduleIstanbul
+            scheduleIstanbul,
           };
         })
-        .filter(Boolean); // Remove nulls
+        .filter(Boolean);
 
-      // If student has no classes, add one row with empty class info
-      if (enrolledClasses.length === 0) {
+      if (enrolled.length === 0) {
         formattedStudents.push({
           firstName: student.firstName,
           lastName: student.lastName,
           email: student.email,
-          creationDate: student.creationDate.toISOString().split('T')[0],
-          level: '',
-          ageGroup: '',
-          instructor: '',
-          link: '',
-          scheduleEST: '',
-          scheduleIstanbul: ''
+          creationDate: student.creationDate.toISOString().split("T")[0],
+          level: "",
+          ageGroup: "",
+          instructor: "",
+          link: "",
+          scheduleEST: "",
+          scheduleIstanbul: "",
         });
       } else {
-        // For each enrolled class, add a separate row in the spreadsheet
-        for (const classInfo of enrolledClasses) {
+        for (const classInfo of enrolled) {
           formattedStudents.push({
             firstName: student.firstName,
             lastName: student.lastName,
             email: student.email,
-            creationDate: student.creationDate.toISOString().split('T')[0],
-            ...classInfo
+            creationDate: student.creationDate.toISOString().split("T")[0],
+            ...classInfo,
           });
         }
       }
     }
 
-    // Return data in the format expected by export-xlsx
     res.json({ student_data: formattedStudents });
   } catch (err) {
-    console.error('Error exporting students:', err.stack || err);
-    res.status(500).json({ message: 'Error exporting students' });
+    console.error("Error exporting students:", err.stack || err);
+    res.status(500).json({ message: "Error exporting students" });
   }
 });
+
+// --- Local dev only: start HTTP server ---------------------------------------
+// Vercel (serverless) will NOT use this. It requires a default export.
+if (process.env.VERCEL !== "1" && process.env.NODE_ENV !== "production") {
+  const PORT = process.env.PORT || 4000;
+  app.listen(PORT, () => {
+    console.log(`API listening locally on http://localhost:${PORT}`);
+  });
+}
+
+// --- Required for Vercel serverless ------------------------------------------
+export default app;
