@@ -5,6 +5,7 @@ import User from "../schemas/User.js";
 import Class from "../schemas/Class.js";
 import { clerkClient } from "@clerk/express";
 import { validateInput } from "../../src/utils/backend/validate-utils.js";
+import { requireAuth, requireAdminOrInstructor } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -180,20 +181,24 @@ router.get('/students-classes/:id', async (req, res) => {
   }
 })
 
+// ---------------------------
+// Admin Students (paginated)
+// ---------------------------
 // GET /api/students-with-classes?limit=100&page=1
 // Purpose: Replace N+1 per-student fetches with ONE paginated response.
-// NOTE: Temporarily public so the page can load; we’ll add Clerk auth once login cleanup is done.
-router.get('/students-with-classes', async (req, res) => {
+// Security: Clerk session + app role (admin or instructor) required.
+router.get('/students-with-classes', requireAuth, requireAdminOrInstructor, async (req, res) => {
   try {
+    
     // Pagination guards (cap limit to prevent huge payloads)
     const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 100));
     const page  = Math.max(1, Number(req.query.page) || 1);
     const skip  = (page - 1) * limit;
 
-    // Least-privilege field selection (avoid PII like phone; avoid roster/links)
+    // Least-privilege selection (avoid PII like phone; avoid roster/links)
     const userSelect  = 'firstName lastName email privilege enrolledClasses creationDate';
     const classSelect = 'level ageGroup instructor schedule isEnrollmentOpen image';
-
+    
     // Run data fetch + total count in parallel for better latency
     const [items, total] = await Promise.all([
       User.find({ privilege: 'student' })
