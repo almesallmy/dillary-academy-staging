@@ -116,6 +116,10 @@ export default function Login() {
               <span className="w-full flex justify-end">
                 <Link href="/forgot-password" className="text-sm text-black opacity-50">{t("forgot_password")}</Link>
               </span>
+
+              {/* Smart CAPTCHA mount point (optional for login) */}
+              <div id="clerk-captcha" className="mt-2" />
+
               <div className="flex gap-x-2">
                 <Button
                   type="submit"

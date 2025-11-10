@@ -151,6 +151,10 @@ export default function SignUp() {
               <div className="mt-2">
                 <PasswordReqs formData={formData} setIsValid={setIsValid} />
               </div>
+
+              {/* Smart CAPTCHA mount point (Clerk renders here when needed) */}
+              <div id="clerk-captcha" className="mt-2" />
+
               <Button
                 type="submit"
                 label={t("sign_up")}
