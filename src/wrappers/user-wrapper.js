@@ -9,10 +9,23 @@ const postUser = async (body) => {
   return response;
 };
 
-/** Get all users (PII — admin-only views should guard on server) */
+/** Get all users (legacy). Prefer paginated helpers when listing many. */
 const getUsers = async () => {
   const response = await axios.get('/api/users');
   return response;
+};
+
+/** Paginated users (server-side), with optional search. */
+const getUsersPaginated = async ({ privilege, page = 1, limit = 24, q = '' }) => {
+  const { data } = await axios.get('/api/users', {
+    params: {
+      privilege,
+      page,
+      limit,
+      ...(q ? { q } : {}),
+    },
+  });
+  return data; // { items, total, page, limit }
 };
 
 /** Get single user by query string (_id | email | whatsapp) */
@@ -32,10 +45,6 @@ const updateUser = async (userId, userData) => {
 
 /**
  * Server-driven, paginated fetch of students with their class details.
- * Query params:
- *   - page (1-based), limit
- *   - level: number | "conversation" | "ielts" (optional)
- *   - q: text search over first/last/email (optional)
  * Returns: { items, total, page, limit }
  */
 const getStudentsWithClasses = async ({ page = 1, limit = 100, level = null, q = '' } = {}) => {
@@ -69,10 +78,11 @@ const deleteUser = async (userId) => {
 export {
   postUser,
   getUsers,
+  getUsersPaginated,      // <— new
   getUser,
   updateUser,
   getStudentsWithClasses,
-  getStudentsClasses, // deprecated
+  getStudentsClasses,     // deprecated
   getStudentsForExport,
   deleteUser,
 };
