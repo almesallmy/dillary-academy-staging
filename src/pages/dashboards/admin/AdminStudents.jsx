@@ -1,4 +1,3 @@
-// src/pages/dashboards/admin/AdminStudents.jsx
 // Admin-only list of students with their enrolled classes.
 // Uses server-driven pagination & filters via /api/students-with-classes.
 
@@ -26,7 +25,7 @@ const PAGE_SIZE = 100; // capped by backend at 200
 
 // Extract a usable value from a level item:
 //  - numbers: 1, 2, ...
-//  - strings like "Level 3": -> 3
+//  - strings like "Level 3" -> 3
 //  - objects like { level: 3 } or { level: "Level 3" } -> 3
 function normalizeLevelValue(lv) {
   const raw = typeof lv === "object" && lv !== null ? lv.level : lv;
@@ -35,7 +34,7 @@ function normalizeLevelValue(lv) {
     const m = raw.match(/\d+/); // first integer inside the string
     return m ? Number(m[0]) : raw; // fall back to string if no number present
   }
-  return raw ?? ""; // last resort
+  return raw ?? "";
 }
 
 const AdminStudents = () => {
@@ -45,14 +44,21 @@ const AdminStudents = () => {
 
   // Data + UI state
   const [loading, setLoading] = useState(true);
-  const [students, setStudents] = useState([]);     // current page items from API
-  const [total, setTotal] = useState(0);            // total rows matching filters (server)
+  const [students, setStudents] = useState([]); // current page items from API
+  const [total, setTotal] = useState(0);        // total rows matching filters (server)
   const [levels, setLevels] = useState([]);
   const [page, setPage] = useState(1);
   const [currFilter, setCurrFilter] = useState(null); // number | "conversation" | "ielts" | null
   const [searchInput, setSearchInput] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [allowRender, setAllowRender] = useState(false);
   const showSkeleton = useDelayedSkeleton(loading);
+
+  // Debounce search to avoid API spam
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedSearch(searchInput), 350);
+    return () => clearTimeout(id);
+  }, [searchInput]);
 
   // Sort levels numerically if possible (e.g., "Level 0" before "Level 1")
   const sortedLevels = useMemo(() => {
@@ -97,28 +103,26 @@ const AdminStudents = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoaded, isSignedIn, user?._id]);
 
-  // (Re)load when filters/search change
+  // (Re)load when filters or debounced search change
   useEffect(() => {
-    if (allowRender) {
-      // optimistic reset to page 1 so paginator UI updates immediately
-      setPage(1);
-      loadPage(1);
-    }
+    if (!allowRender) return;
+    // Optimistically reset to page 1 so paginator UI updates immediately
+    setPage(1);
+    loadPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currFilter, searchInput]);
+  }, [currFilter, debouncedSearch]);
 
   // Centralized loader (with optimistic page update support)
   async function loadPage(nextPage) {
     try {
-      // Optimistic page update: reflect target page immediately
-      setPage(nextPage);
+      setPage(nextPage);     // optimistic page update
       setLoading(true);
 
       const { items, total: t } = await getStudentsWithClasses({
         page: nextPage,
         limit: PAGE_SIZE,
         level: currFilter ?? null,
-        q: searchInput.trim(),
+        q: debouncedSearch.trim(),
       });
 
       setStudents(items || []);
@@ -246,11 +250,12 @@ const AdminStudents = () => {
 
       {allowRender && total > 0 && (
         <div className="pt-6">
+          {/* disable buttons while fetching */}
           <Pagination
             page={page}
             total={total}
             limit={PAGE_SIZE}
-            busy={loading}              {/* disable buttons while fetching */}
+            busy={loading}
             onChange={(p) => {
               if (p !== page) loadPage(p);
             }}
