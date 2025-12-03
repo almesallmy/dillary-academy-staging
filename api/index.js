@@ -28,12 +28,57 @@ import classRoutes from "./routes/class-routes.js";
 // Memoized DB connection (must export a function that reuses an existing conn)
 import { dbConnect } from "./db.js";
 
+// Security middleware (Helmet + CSP), centralized in /middleware
+import security from "./middleware/security.js";
+
+// Rate limiting
+import { apiLimiter, burstLimiter } from "./middleware/rate-limit.js";
+
 const app = express();
 
 // --- Global middleware (order matters) ---------------------------------------
-app.use(cors());
-app.use(express.json());
+app.disable("x-powered-by");
+
+// Ensure correct client IPs behind Vercel/CF for rate limiting & logs
+app.set("trust proxy", 1);
+
+// Security headers (CSP, HSTS, etc.)
+app.use(security);
+
+// CORS: allow same-origin and an allowlist from env
+// Set ALLOWED_ORIGINS as a comma-separated list in Vercel project settings if needed.
+const allowlist = (process.env.ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      // Allow same-origin (no Origin header) & explicit allowlist
+      if (!origin || allowlist.includes(origin)) return cb(null, true);
+      return cb(new Error("Not allowed by CORS"), false);
+    },
+    credentials: false,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Origin",
+      "Accept",
+      "Content-Type",
+      "Authorization",
+      "X-Requested-With"
+    ],
+  })
+);
+
+// Body parsing & basic injection protection
+app.use(express.json({ limit: "100kb" }));
 app.use(mongoSanitize());
+
+// Rate limit early (before DB work)
+app.use("/api", apiLimiter);
+// Stricter limiter for sensitive endpoints
+app.use("/api/sign-up", burstLimiter);
 
 // Ensure DB is connected before any route runs.
 // dbConnect() should be memoized so warm invocations are a fast no-op.
@@ -191,7 +236,7 @@ app.get("/api/students-export", async (_req, res) => {
             instructor: classInfo.instructor,
             link: classInfo.link,
             scheduleEST,
-            scheduleIstanbul,
+            scheduleIstanbul
           };
         })
         .filter(Boolean);
@@ -207,7 +252,7 @@ app.get("/api/students-export", async (_req, res) => {
           instructor: "",
           link: "",
           scheduleEST: "",
-          scheduleIstanbul: "",
+          scheduleIstanbul: ""
         });
       } else {
         for (const classInfo of enrolled) {
@@ -216,7 +261,7 @@ app.get("/api/students-export", async (_req, res) => {
             lastName: student.lastName,
             email: student.email,
             creationDate: student.creationDate.toISOString().split("T")[0],
-            ...classInfo,
+            ...classInfo
           });
         }
       }
